@@ -1,5 +1,6 @@
 import './style.css';
 import { detectBrowserType } from './utils/browserDetection';
+import { detectBrowserEngine } from './utils/engineDetection';
 import { CompatibilityService } from './services/compatibilityService';
 import { DetectionResults } from './components/DetectionResults';
 import { FeatureCategories } from './components/FeatureCategories';
@@ -25,10 +26,11 @@ class App {
       await this.compatibilityService.initialize();
       
       const browserType = detectBrowserType();
+      const engineInfo = detectBrowserEngine();
       const versionRange = this.compatibilityService.estimateVersionRange(browserType);
       
       // Update UI components
-      this.detectionResults.updateBrowserInfo(browserType, versionRange);
+      this.detectionResults.updateBrowserInfo(browserType, versionRange, engineInfo);
       this.featureCategories.updateCategories(this.compatibilityService.getCategorizedFeatures());
       this.featureList.updateFeatures(
         this.compatibilityService.getFeatureTests(),
