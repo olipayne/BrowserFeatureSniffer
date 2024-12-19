@@ -1,5 +1,5 @@
-import { BrowserType, VersionRange } from '@/types/browserData';
-import { Feature, FeatureTest } from '@/types/feature';
+import { BrowserType, VersionRange, VersionConstraint, VersionConstraintReason } from '@/types/browserData';
+import { FeatureTest } from '@/types/feature';
 import { flattenCompatData, generateFeatureTest } from '@/utils/featureDetection';
 import { getCurrentBrowserVersion } from '@/utils/browserDetection';
 import { processSupport } from '@/utils/versionParsing';
@@ -40,56 +40,55 @@ export class CompatibilityService {
   }
 
   estimateVersionRange(browserType: BrowserType): VersionRange {
-    let minVersion = 0;
-    let maxVersion = getCurrentBrowserVersion(browserType);
-    const versionConstraints = [];
+    const maxVersion = getCurrentBrowserVersion(browserType);
+    const versionConstraints: VersionConstraint[] = [];
 
     for (const [feature, supported] of Object.entries(this.results)) {
       const featureData = this.featureTests[feature];
       if (!featureData.support[browserType]) continue;
 
       const supportData = processSupport(featureData.support[browserType]);
-      if (!supportData) continue;
+      if (!supportData.length) continue;
 
       for (const version of supportData) {
-        if (!version) continue;
-
         if (supported) {
-          if (version.added) {
+          if (version.added !== null) {
             versionConstraints.push({
               min: version.added,
               max: version.removed || maxVersion,
               feature,
-              reason: 'Feature present',
+              reason: 'Feature present' as VersionConstraintReason,
             });
           }
         } else {
-          if (version.added && version.removed) {
+          if (version.added !== null && version.removed !== null) {
             versionConstraints.push({
               min: version.removed,
               max: maxVersion,
               feature,
-              reason: 'Feature removed',
+              reason: 'Feature removed' as VersionConstraintReason,
             });
-          } else if (version.added) {
+          } else if (version.added !== null) {
             versionConstraints.push({
               min: 0,
               max: version.added,
               feature,
-              reason: 'Feature not yet added',
+              reason: 'Feature not yet added' as VersionConstraintReason,
             });
           }
         }
       }
     }
 
-    // Process version constraints
+    // Find strictly overlapping version ranges
     let finalMin = 0;
     let finalMax = maxVersion;
-    let strictRanges = [];
+    const strictRanges: VersionConstraint[] = [];
 
+    // First, sort constraints by min version
     versionConstraints.sort((a, b) => a.min - b.min);
 
+    // Find overlapping constraints that create strict version requirements
     versionConstraints.forEach((constraint) => {
       if (constraint.min === constraint.max) {
         strictRanges.push(constraint);
@@ -108,15 +107,20 @@ export class CompatibilityService {
       }
     });
 
-    // Handle exact version matches
+    // If we have any exact version matches, use them to narrow the range
     const exactVersions = strictRanges.filter((r) => r.min === r.max);
     if (exactVersions.length > 0) {
       const version = exactVersions[0].min;
       finalMin = version;
       finalMax = version;
-    } else if (finalMin > finalMax) {
-      [finalMin, finalMax] = [finalMax, finalMin];
-        }
+    } else {
+      // Ensure min <= max
+      if (finalMin > finalMax) {
+        const temp = finalMin;
+        finalMin = finalMax;
+        finalMax = temp;
+      }
+    }
 
     return {
       min: Math.floor(finalMin),

@@ -1,22 +1,19 @@
-import { BrowserSupport, ProcessedSupport } from '@/types/feature';
+import { BrowserSupport } from '@/types/browserData';
+import { ProcessedSupport } from '@/types/feature';
 
-export function parseVersionString(version: string | boolean | null): number | null {
+export function parseVersionString(version: string | boolean | null | undefined): number | null {
   if (!version) return null;
   if (version === true) return 1;
-  if (version === false) return null;
+  if (typeof version !== 'string') return null;
   
-  if (typeof version === 'string') {
-    // Handle "≤" prefix
-    if (version.startsWith('≤')) {
-      return parseFloat(version.slice(1));
-    }
-    
-    // Handle normal version numbers
-    const parsed = parseFloat(version);
-    return isNaN(parsed) ? null : parsed;
+  // Handle "≤" prefix
+  if (version.startsWith('≤')) {
+    return parseFloat(version.slice(1));
   }
   
-  return null;
+  // Handle normal version numbers
+  const parsed = parseFloat(version);
+  return isNaN(parsed) ? null : parsed;
 }
 
 export function processSupport(support: BrowserSupport | BrowserSupport[] | undefined): ProcessedSupport[] {
@@ -47,7 +44,7 @@ export function getMinVersion(support: BrowserSupport | BrowserSupport[] | undef
   if (!support) return null;
   
   const processed = processSupport(support);
-  if (!processed || processed.length === 0) return null;
+  if (processed.length === 0) return null;
   
   // Find the earliest version_added among all entries
   const versions = processed

@@ -1,4 +1,4 @@
-import { Feature, FeatureTest } from '@/types/feature';
+import { Feature, CompatData } from '@/types/feature';
 
 export function generateFeatureTest(path: string): () => boolean {
   const parts = path.split('.');
@@ -17,7 +17,7 @@ export function generateFeatureTest(path: string): () => boolean {
   };
 }
 
-export function flattenCompatData(obj: any, path: string = ''): Feature[] {
+export function flattenCompatData(obj: Record<string, CompatData>, path: string = ''): Feature[] {
   const features: Feature[] = [];
 
   for (const [key, value] of Object.entries(obj)) {
@@ -36,7 +36,7 @@ export function flattenCompatData(obj: any, path: string = ''): Feature[] {
     }
 
     if (value && typeof value === 'object' && !value.__compat) {
-      features.push(...flattenCompatData(value, newPath));
+      features.push(...flattenCompatData(value as Record<string, CompatData>, newPath));
     }
   }
 

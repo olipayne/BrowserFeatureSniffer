@@ -66,8 +66,9 @@ export class FeatureList {
       const items = this.element.querySelectorAll('.feature-item');
       
       items.forEach((item) => {
-        const path = (item as HTMLElement).dataset.path?.toLowerCase() || '';
-        item.style.display = path.includes(searchTerm) ? 'block' : 'none';
+        const htmlItem = item as HTMLElement;
+        const path = htmlItem.dataset.path?.toLowerCase() || '';
+        htmlItem.style.display = path.includes(searchTerm) ? 'block' : 'none';
       });
     });
   }
