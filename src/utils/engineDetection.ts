@@ -60,7 +60,7 @@ export function detectBrowserEngine(): EngineResult {
         {
           test: () => {
             const canvas = document.createElement('canvas');
-            return canvas.getContext && 'mozOpaque' in canvas;
+            return canvas.getContext('2d') !== null && 'mozOpaque' in canvas;
           },
           description: 'canvas.mozOpaque'
         },
