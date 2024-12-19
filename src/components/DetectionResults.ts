@@ -20,11 +20,12 @@ export class DetectionResults {
 
     if (versionRangeEl) {
       versionRangeEl.innerHTML = `
-        <p class="font-medium">Estimated Version Range:</p>
-        <p>Version ${versionRange.min.toFixed(1)} - ${versionRange.max.toFixed(1)}</p>
-        <div class="mt-4 text-sm">
+        <div>
+          <p class="font-medium">Estimated Version Range:</p>
+          <p class="mb-4">Version ${versionRange.min.toFixed(1)} - ${versionRange.max.toFixed(1)}</p>
+          
           <p class="font-medium mb-2">Key Version Constraints:</p>
-          <div class="space-y-1 max-h-40 overflow-y-auto">
+          <div class="max-h-52 overflow-y-auto">
             ${versionRange.constraints
               .filter(
                 (c) =>
@@ -33,7 +34,7 @@ export class DetectionResults {
               )
               .map(
                 (c) => `
-                  <div class="text-xs">
+                  <div class="text-xs mb-1">
                     <span class="font-medium">${c.feature}</span>
                     <span class="text-gray-600">
                       (${c.reason}: v${c.min} - v${c.max})
