@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Dynamic Browser Feature Detector</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+  </head>
+  <body class="bg-gray-100 p-8">
+    <div class="max-w-6xl mx-auto">
+      <h1 class="text-3xl font-bold mb-6">Dynamic Browser Feature Detector</h1>
+
+      <div id="loading" class="bg-white rounded-lg shadow p-6 mb-6">
+        <div class="animate-pulse">
+          <div class="h-4 bg-gray-200 rounded w-3/4 mb-4"></div>
+          <div class="h-4 bg-gray-200 rounded w-1/2"></div>
+        </div>
+      </div>
+
+      <div
+        class="grid grid-cols-1 md:grid-cols-2 gap-6 opacity-0 transition-opacity duration-500"
+        id="results-container"
+      >
+        <div class="bg-white rounded-lg shadow p-6">
+          <h2 class="text-xl font-semibold mb-4">Detection Results</h2>
+          <div id="results" class="space-y-4">
+            <div id="browser-guess" class="p-4 bg-blue-50 rounded-lg"></div>
+            <div id="version-range" class="p-4 bg-green-50 rounded-lg"></div>
+          </div>
+        </div>
+
+        <div class="bg-white rounded-lg shadow p-6">
+          <h2 class="text-xl font-semibold mb-4">Feature Categories</h2>
+          <div id="categories" class="space-y-2"></div>
+        </div>
+      </div>
+
+      <div
+        class="mt-6 bg-white rounded-lg shadow p-6 opacity-0 transition-opacity duration-500"
+        id="features-container"
+      >
+        <div class="flex justify-between items-center mb-4">
+          <h2 class="text-xl font-semibold">Detailed Feature Support</h2>
+          <input
+            type="text"
+            id="feature-search"
+            placeholder="Search features..."
+            class="px-4 py-2 border rounded-lg"
+          />
+        </div>
+        <div id="features" class="space-y-2"></div>
+      </div>
+    </div>
+
+    <script>
+      // Helper function to flatten the compat data into testable features
+      function flattenCompatData(obj, path = "") {
+        const features = [];
+
+        for (const [key, value] of Object.entries(obj)) {
+          const newPath = path ? `${path}.${key}` : key;
+
+          if (value && value.__compat) {
+            const support = value.__compat.support;
+            if (support) {
+              features.push({
+                path: newPath,
+                support,
+                name: value.__compat.name || key,
+                mdn_url: value.__compat?.mdn_url,
+              });
+            }
+          }
+
+          if (value && typeof value === "object" && !value.__compat) {
+            features.push(...flattenCompatData(value, newPath));
+          }
+        }
+
+        return features;
+      }
+
+      // Generate a test function for a feature path
+      function generateFeatureTest(path) {
+        const parts = path.split(".");
+        return () => {
+          try {
+            let obj = window;
+            for (const part of parts) {
+              if (part === "constructor") return false; // Skip dangerous properties
+              obj = obj[part];
+              if (obj === undefined) return false;
+            }
+            return true;
+          } catch {
+            return false;
+          }
+        };
+      }
+
+      // Process browser support data
+      function processSupport(support) {
+        if (Array.isArray(support)) {
+          // Take the most recent version if there are multiple entries
+          return support
+            .filter((s) => s.version_added !== null)
+            .sort((a, b) => {
+              if (!a.version_added) return 1;
+              if (!b.version_added) return -1;
+              return parseFloat(b.version_added) - parseFloat(a.version_added);
+            })[0];
+        }
+        return support;
+      }
+
+      // Get the minimum version where a feature was added
+      function getMinVersion(support) {
+        const processed = processSupport(support);
+        if (!processed || processed.version_added === null) return null;
+        if (typeof processed.version_added === "string") {
+          if (processed.version_added.startsWith("≤")) {
+            return parseFloat(processed.version_added.slice(1));
+          }
+          return parseFloat(processed.version_added);
+        }
+        return processed.version_added;
+      }
+
+      async function initializeDetector() {
+        try {
+          // Fetch compatibility data
+          const response = await fetch(
+            "https://unpkg.com/@mdn/browser-compat-data/data.json"
+          );
+          const bcd = await response.json();
+
+          // Process API features
+          const apiFeatures = flattenCompatData(bcd.api).filter((feature) => {
+            // Filter out features that are too deep or potentially problematic
+            const depth = feature.path.split(".").length;
+            return depth < 4 && !feature.path.includes("constructor");
+          });
+
+          // Generate tests for each feature
+          const featureTests = {};
+          apiFeatures.forEach((feature) => {
+            featureTests[feature.path] = {
+              test: generateFeatureTest(feature.path),
+              support: feature.support,
+              name: feature.name,
+              mdn_url: feature.mdn_url,
+            };
+          });
+
+          // Run all tests
+          const results = {};
+          for (const [feature, data] of Object.entries(featureTests)) {
+            results[feature] = data.test();
+          }
+
+          // Process results
+          const browserType = detectBrowserType();
+          const versionRange = estimateVersionRange(
+            results,
+            featureTests,
+            browserType
+          );
+
+          // Update UI
+          updateUI(results, featureTests, browserType, versionRange);
+        } catch (error) {
+          console.error("Error initializing detector:", error);
+          document.getElementById("loading").innerHTML = `
+                    <div class="text-red-600">
+                        Error loading browser compatibility data. Please try again later.
+                    </div>
+                `;
+        }
+      }
+
+      function detectBrowserType() {
+        const ua = navigator.userAgent.toLowerCase();
+        if (ua.includes("firefox")) return "firefox";
+        if (ua.includes("safari") && !ua.includes("chrome")) return "safari";
+        if (ua.includes("chrome")) return "chrome";
+        return "unknown";
+      }
+
+      function estimateVersionRange(results, featureTests, browserType) {
+        let minVersion = 0;
+        let maxVersion = 999;
+
+        for (const [feature, supported] of Object.entries(results)) {
+          const featureData = featureTests[feature];
+          if (!featureData.support[browserType]) continue;
+
+          const version = getMinVersion(featureData.support[browserType]);
+          if (!version) continue;
+
+          if (supported) {
+            minVersion = Math.max(minVersion, version);
+          } else {
+            maxVersion = Math.min(maxVersion, version);
+          }
+        }
+
+        return { min: minVersion, max: maxVersion };
+      }
+
+      function updateUI(results, featureTests, browserType, versionRange) {
+        // Hide loading indicator
+        document.getElementById("loading").style.display = "none";
+
+        // Show results containers
+        document
+          .getElementById("results-container")
+          .classList.remove("opacity-0");
+        document
+          .getElementById("features-container")
+          .classList.remove("opacity-0");
+
+        // Update browser detection results
+        document.getElementById("browser-guess").innerHTML = `
+                <p class="font-medium">Detected Browser: ${
+                  browserType.charAt(0).toUpperCase() + browserType.slice(1)
+                }</p>
+            `;
+
+        document.getElementById("version-range").innerHTML = `
+                <p class="font-medium">Estimated Version Range:</p>
+                <p>Version ${versionRange.min.toFixed(
+                  1
+                )} - ${versionRange.max.toFixed(1)}</p>
+            `;
+
+        // Group features by category
+        const categories = {};
+        Object.entries(featureTests).forEach(([path, data]) => {
+          const category = path.split(".")[0];
+          if (!categories[category]) {
+            categories[category] = { total: 0, supported: 0 };
+          }
+          categories[category].total++;
+          if (results[path]) {
+            categories[category].supported++;
+          }
+        });
+
+        // Update categories display
+        document.getElementById("categories").innerHTML = Object.entries(
+          categories
+        )
+          .map(([category, data]) => {
+            const percentage = ((data.supported / data.total) * 100).toFixed(1);
+            return `
+                        <div class="p-3 bg-gray-50 rounded">
+                            <div class="flex justify-between items-center mb-2">
+                                <span class="font-medium">${category}</span>
+                                <span class="text-sm text-gray-600">
+                                    ${data.supported}/${data.total} (${percentage}%)
+                                </span>
+                            </div>
+                            <div class="w-full bg-gray-200 rounded-full h-2">
+                                <div class="bg-blue-600 h-2 rounded-full" style="width: ${percentage}%"></div>
+                            </div>
+                        </div>
+                    `;
+          })
+          .join("");
+
+        // Create the features display
+        const featuresEl = document.getElementById("features");
+        const featuresList = Object.entries(featureTests)
+          .map(([path, data]) => {
+            const supported = results[path];
+            return `
+                        <div class="p-2 rounded ${
+                          supported ? "bg-green-50" : "bg-red-50"
+                        } feature-item" 
+                             data-path="${path}">
+                            <div class="flex justify-between">
+                                <div>
+                                    <span class="font-medium">${path}</span>
+                                    <span class="${
+                                      supported
+                                        ? "text-green-600"
+                                        : "text-red-600"
+                                    } ml-2">
+                                        ${supported ? "✓" : "✗"}
+                                    </span>
+                                </div>
+                                ${
+                                  data.mdn_url
+                                    ? `
+                                    <a href="${data.mdn_url}" 
+                                       target="_blank" 
+                                       class="text-blue-600 hover:text-blue-800 text-sm">
+                                        MDN Docs
+                                    </a>
+                                `
+                                    : ""
+                                }
+                            </div>
+                            ${
+                              browserType in data.support
+                                ? `
+                                <div class="text-sm text-gray-600 mt-1">
+                                    Added in version: ${
+                                      getMinVersion(
+                                        data.support[browserType]
+                                      ) || "unknown"
+                                    }
+                                </div>
+                            `
+                                : ""
+                            }
+                        </div>
+                    `;
+          })
+          .join("");
+
+        featuresEl.innerHTML = featuresList;
+
+        // Add search functionality
+        const searchInput = document.getElementById("feature-search");
+        searchInput.addEventListener("input", (e) => {
+          const searchTerm = e.target.value.toLowerCase();
+          document.querySelectorAll(".feature-item").forEach((item) => {
+            const path = item.dataset.path.toLowerCase();
+            item.style.display = path.includes(searchTerm) ? "block" : "none";
+          });
+        });
+      }
+
+      // Initialize when page loads
+      window.addEventListener("load", initializeDetector);
+    </script>
+  </body>
+</html>
