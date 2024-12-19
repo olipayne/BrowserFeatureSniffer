@@ -101,16 +101,48 @@
       // Process browser support data
       function processSupport(support) {
         if (Array.isArray(support)) {
-          // Take the most recent version if there are multiple entries
-          return support
-            .filter((s) => s.version_added !== null)
-            .sort((a, b) => {
-              if (!a.version_added) return 1;
-              if (!b.version_added) return -1;
-              return parseFloat(b.version_added) - parseFloat(a.version_added);
-            })[0];
+          // Process all entries to find both addition and removal information
+          const versions = support
+            .filter(
+              (s) => s.version_added !== null || s.version_removed !== null
+            )
+            .map((s) => ({
+              added: s.version_added
+                ? s.version_added.startsWith("≤")
+                  ? parseFloat(s.version_added.slice(1))
+                  : parseFloat(s.version_added)
+                : null,
+              removed: s.version_removed
+                ? s.version_removed.startsWith("≤")
+                  ? parseFloat(s.version_removed.slice(1))
+                  : parseFloat(s.version_removed)
+                : null,
+              flags: s.flags || [],
+              partial_implementation: s.partial_implementation || false,
+            }))
+            .filter((v) => !isNaN(v.added) || !isNaN(v.removed));
+
+          return versions.length > 0 ? versions : null;
         }
-        return support;
+
+        if (!support) return null;
+
+        return [
+          {
+            added: support.version_added
+              ? support.version_added.startsWith("≤")
+                ? parseFloat(support.version_added.slice(1))
+                : parseFloat(support.version_added)
+              : null,
+            removed: support.version_removed
+              ? support.version_removed.startsWith("≤")
+                ? parseFloat(support.version_removed.slice(1))
+                : parseFloat(support.version_removed)
+              : null,
+            flags: support.flags || [],
+            partial_implementation: support.partial_implementation || false,
+          },
+        ];
       }
 
       // Get the minimum version where a feature was added
@@ -188,23 +220,125 @@
 
       function estimateVersionRange(results, featureTests, browserType) {
         let minVersion = 0;
-        let maxVersion = 999;
+        let maxVersion = getCurrentBrowserVersion(browserType);
+        const versionConstraints = [];
 
         for (const [feature, supported] of Object.entries(results)) {
           const featureData = featureTests[feature];
           if (!featureData.support[browserType]) continue;
 
-          const version = getMinVersion(featureData.support[browserType]);
-          if (!version) continue;
+          const supportData = processSupport(featureData.support[browserType]);
+          if (!supportData) continue;
 
-          if (supported) {
-            minVersion = Math.max(minVersion, version);
-          } else {
-            maxVersion = Math.min(maxVersion, version);
+          for (const version of supportData) {
+            if (!version) continue;
+
+            // Handle feature presence
+            if (supported) {
+              // If feature is present, browser version must be:
+              // 1. After or equal to when it was added
+              // 2. Before or equal to when it was removed (if it was removed)
+              if (version.added) {
+                versionConstraints.push({
+                  min: version.added,
+                  max: version.removed || maxVersion,
+                  feature,
+                  reason: "Feature present",
+                });
+              }
+            } else {
+              // If feature is not present, browser version must be:
+              // 1. Before it was added OR
+              // 2. After it was removed
+              if (version.added && version.removed) {
+                versionConstraints.push({
+                  min: version.removed,
+                  max: maxVersion,
+                  feature,
+                  reason: "Feature removed",
+                });
+              } else if (version.added) {
+                versionConstraints.push({
+                  min: 0,
+                  max: version.added,
+                  feature,
+                  reason: "Feature not yet added",
+                });
+              }
+            }
           }
         }
 
-        return { min: minVersion, max: maxVersion };
+        // Find strictly overlapping version ranges
+        let finalMin = 0;
+        let finalMax = maxVersion;
+        let strictRanges = [];
+
+        // First, sort constraints by min version
+        versionConstraints.sort((a, b) => a.min - b.min);
+
+        // Find overlapping constraints that create strict version requirements
+        versionConstraints.forEach((constraint) => {
+          if (constraint.min === constraint.max) {
+            // Exact version requirement
+            strictRanges.push(constraint);
+          } else if (
+            constraint.reason === "Feature present" &&
+            constraint.min > finalMin
+          ) {
+            finalMin = constraint.min;
+            strictRanges.push(constraint);
+          } else if (
+            constraint.reason === "Feature not yet added" &&
+            constraint.max < finalMax
+          ) {
+            finalMax = constraint.max;
+            strictRanges.push(constraint);
+          }
+        });
+
+        // If we have any exact version matches, use them to narrow the range
+        const exactVersions = strictRanges.filter((r) => r.min === r.max);
+        if (exactVersions.length > 0) {
+          const version = exactVersions[0].min;
+          finalMin = version;
+          finalMax = version;
+        } else {
+          // Ensure min <= max
+          if (finalMin > finalMax) {
+            const temp = finalMin;
+            finalMin = finalMax;
+            finalMax = temp;
+          }
+        }
+
+        // Store constraints for UI display
+        window.versionConstraints = strictRanges;
+
+        return {
+          min: Math.floor(finalMin),
+          max: Math.ceil(finalMax),
+          constraints: versionConstraints,
+        };
+      }
+
+      function getCurrentBrowserVersion(browserType) {
+        const ua = navigator.userAgent;
+        let match;
+
+        switch (browserType) {
+          case "chrome":
+            match = ua.match(/Chrome\/(\d+\.\d+)/);
+            break;
+          case "firefox":
+            match = ua.match(/Firefox\/(\d+\.\d+)/);
+            break;
+          case "safari":
+            match = ua.match(/Version\/(\d+\.\d+)/);
+            break;
+        }
+
+        return match ? parseFloat(match[1]) : 999;
       }
 
       function updateUI(results, featureTests, browserType, versionRange) {
@@ -231,37 +365,154 @@
                 <p>Version ${versionRange.min.toFixed(
                   1
                 )} - ${versionRange.max.toFixed(1)}</p>
+                <div class="mt-4 text-sm">
+                    <p class="font-medium mb-2">Key Version Constraints:</p>
+                    <div class="space-y-1 max-h-40 overflow-y-auto">
+                        ${versionRange.constraints
+                          .filter(
+                            (c) =>
+                              Math.abs(c.min - versionRange.min) < 1 ||
+                              Math.abs(c.max - versionRange.max) < 1
+                          )
+                          .map(
+                            (c) => `
+                                <div class="text-xs">
+                                    <span class="font-medium">${c.feature}</span>
+                                    <span class="text-gray-600">
+                                        (${c.reason}: v${c.min} - v${c.max})
+                                    </span>
+                                </div>
+                            `
+                          )
+                          .join("")}
+                    </div>
+                </div>
             `;
 
-        // Group features by category
+        // Group features by meaningful categories
         const categories = {};
         Object.entries(featureTests).forEach(([path, data]) => {
-          const category = path.split(".")[0];
-          if (!categories[category]) {
-            categories[category] = { total: 0, supported: 0 };
+          // Extract main category from path or MDN data
+          const pathParts = path.split(".");
+          let category;
+
+          // Determine category based on path structure and known patterns
+          if (path.includes("CSS")) {
+            category = "CSS & Styling";
+          } else if (path.includes("HTML")) {
+            category = "HTML Features";
+          } else if (path.includes("Worker")) {
+            category = "Web Workers";
+          } else if (
+            path.includes("WebGL") ||
+            path.includes("Canvas") ||
+            path.includes("XR")
+          ) {
+            category = "Graphics & XR";
+          } else if (
+            path.includes("Media") ||
+            path.includes("Audio") ||
+            path.includes("Video")
+          ) {
+            category = "Media Features";
+          } else if (
+            path.includes("Storage") ||
+            path.includes("Cache") ||
+            path.includes("DB")
+          ) {
+            category = "Storage & Caching";
+          } else if (
+            path.includes("Network") ||
+            path.includes("Fetch") ||
+            path.includes("XHR")
+          ) {
+            category = "Networking";
+          } else if (path.includes("Crypto") || path.includes("Security")) {
+            category = "Security & Crypto";
+          } else if (pathParts[0] === "api") {
+            category = "Web APIs";
+          } else {
+            category = "Other Features";
           }
+
+          if (!categories[category]) {
+            categories[category] = {
+              total: 0,
+              supported: 0,
+              features: [],
+            };
+          }
+
           categories[category].total++;
           if (results[path]) {
             categories[category].supported++;
           }
+
+          // Store feature details for deeper analysis
+          categories[category].features.push({
+            path,
+            supported: results[path],
+            data: data,
+          });
         });
 
         // Update categories display
         document.getElementById("categories").innerHTML = Object.entries(
           categories
         )
+          .filter(([_, data]) => data.total > 0) // Only show categories with features
+          .sort((a, b) => b[1].total - a[1].total) // Sort by number of features
           .map(([category, data]) => {
             const percentage = ((data.supported / data.total) * 100).toFixed(1);
+            const features = data.features
+              .sort((a, b) => b.supported - a.supported)
+              .slice(0, 3); // Show top 3 features as examples
+
             return `
-                        <div class="p-3 bg-gray-50 rounded">
-                            <div class="flex justify-between items-center mb-2">
-                                <span class="font-medium">${category}</span>
-                                <span class="text-sm text-gray-600">
-                                    ${data.supported}/${data.total} (${percentage}%)
+                        <div class="p-4 bg-gray-50 rounded hover:bg-gray-100 transition-colors">
+                            <div class="flex justify-between items-center mb-3">
+                                <div>
+                                    <span class="font-medium text-lg">${category}</span>
+                                    <span class="ml-2 text-sm text-gray-600">
+                                        ${data.supported}/${data.total} features
+                                    </span>
+                                </div>
+                                <span class="text-sm font-medium ${
+                                  percentage > 80
+                                    ? "text-green-600"
+                                    : percentage > 40
+                                    ? "text-yellow-600"
+                                    : "text-red-600"
+                                }">
+                                    ${percentage}%
                                 </span>
                             </div>
-                            <div class="w-full bg-gray-200 rounded-full h-2">
-                                <div class="bg-blue-600 h-2 rounded-full" style="width: ${percentage}%"></div>
+                            <div class="w-full bg-gray-200 rounded-full h-2 mb-3">
+                                <div class="h-2 rounded-full transition-all duration-500 ${
+                                  percentage > 80
+                                    ? "bg-green-500"
+                                    : percentage > 40
+                                    ? "bg-yellow-500"
+                                    : "bg-red-500"
+                                }" style="width: ${percentage}%"></div>
+                            </div>
+                            <div class="text-sm text-gray-600 space-y-1">
+                                ${features
+                                  .map(
+                                    (f) => `
+                                    <div class="flex items-center">
+                                        <span class="${
+                                          f.supported
+                                            ? "text-green-500"
+                                            : "text-red-500"
+                                        } mr-2">
+                                            ${f.supported ? "✓" : "✗"}
+                                        </span>
+                                        ${f.path}
+                                    </div>
+                                `
+                                  )
+                                  .join("")}
                             </div>
                         </div>
                     `;
